@@ -121,3 +121,26 @@ python defense_mcp.py
 - [OpenAI Function Calling 文档](https://platform.openai.com/docs/guides/function-calling)
 - [OWASP — Prompt Injection](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 - [Spotlighting: Defending Against Prompt Injection](https://ar599.org/abs/2403.14720)
+
+## Phoenix 可观测性
+
+所有 Agent 脚本均内置 Phoenix OpenTelemetry Tracing。
+
+```bash
+# 1. 安装 Phoenix 依赖
+pip install -r requirements.txt
+
+# 2. 启动 Phoenix 服务（后台运行）
+nohup python -m phoenix.server main serve > phoenix.log 2>&1 &
+
+# 3. 确保 .env 中启用了追踪
+# ENABLE_PHOENIX_TRACING=true
+
+# 4. 运行任意 Agent 脚本
+python native_agent.py
+
+# 5. 浏览器打开 Phoenix UI
+# http://127.0.0.1:6006
+```
+
+在 Phoenix 中可以看到每次 LLM 调用的完整交互链路：System Prompt → Tool Schema → tool_calls → 执行结果 → Final Response。

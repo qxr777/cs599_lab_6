@@ -22,6 +22,26 @@ from openai import OpenAI
 load_dotenv()
 
 # ──────────────────────────────────────────────
+#  Phoenix OpenTelemetry Tracing
+# ──────────────────────────────────────────────
+
+PHOENIX_COLLECTOR_ENDPOINT = os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://127.0.0.1:6006/v1/traces")
+
+if os.getenv("ENABLE_PHOENIX_TRACING", "").lower() in ("true", "1", "yes"):
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    trace.set_tracer_provider(TracerProvider())
+    trace.get_tracer_provider().add_span_processor(
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=PHOENIX_COLLECTOR_ENDPOINT))
+    )
+
+    from openinference.instrumentation.openai import OpenAIInstrumentor
+    OpenAIInstrumentor().instrument()
+
+# ──────────────────────────────────────────────
 #  配置
 # ──────────────────────────────────────────────
 
