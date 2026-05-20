@@ -127,14 +127,18 @@ python defense_mcp.py
 所有 Agent 脚本均内置 Phoenix OpenTelemetry Tracing。
 
 ```bash
-# 1. 安装 Phoenix 依赖
+# 1. 安装 Python 依赖
 pip install -r requirements.txt
 
-# 2. 启动 Phoenix 服务（后台运行）
-nohup python -m phoenix.server main serve > phoenix.log 2>&1 &
-
-# 3. 确保 .env 中启用了追踪
+# 2. 确保 .env 中启用了追踪
 # ENABLE_PHOENIX_TRACING=true
+# PHOENIX_COLLECTOR_ENDPOINT=http://127.0.0.1:6006/v1/traces
+
+# 3. 启动 Phoenix Docker 容器（如果未运行）
+docker run --rm -it \
+  -p 6006:6006 \
+  -p 4317:4317 \
+  arizephoenix/phoenix:latest
 
 # 4. 运行任意 Agent 脚本
 python native_agent.py

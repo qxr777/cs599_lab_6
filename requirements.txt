@@ -4,8 +4,7 @@ mcp>=1.0.0
 aiohttp>=3.9.0
 python-dotenv>=1.0.0
 
-# Phoenix Observability (optional)
-arize-phoenix>=4.0.0
+# Phoenix Tracing (client-side, Phoenix server runs in Docker)
 opentelemetry-api>=1.24.0
 opentelemetry-sdk>=1.24.0
 opentelemetry-exporter-otlp-proto-http>=1.24.0
