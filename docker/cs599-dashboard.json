@@ -1,0 +1,116 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "cs599-llama",
+    "title": "CS599 Llama Server Metrics",
+    "tags": ["cs599", "llama"],
+    "timezone": "",
+    "liveNow": true,
+    "time": {"from": "now-5m", "to": "now"},
+    "panels": [
+      {
+        "id": 1,
+        "title": "Prompt Throughput (tokens/s)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:prompt_tokens_seconds", "legendFormat": "Prompt TPS"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+      },
+      {
+        "id": 2,
+        "title": "Generation Throughput (tokens/s)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:predicted_tokens_seconds", "legendFormat": "Decode TPS"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+      },
+      {
+        "id": 3,
+        "title": "Active Requests",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:requests_processing", "legendFormat": "Processing"},
+          {"refId": "B", "expr": "llamacpp:requests_deferred", "legendFormat": "Queued"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+      },
+      {
+        "id": 4,
+        "title": "Busy Slots per Decode",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:n_busy_slots_per_decode", "legendFormat": "Busy Slots"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+      },
+      {
+        "id": 5,
+        "title": "Total Tokens Processed",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "rate(llamacpp:prompt_tokens_total[10s])", "legendFormat": "Prompt Tokens/s"},
+          {"refId": "B", "expr": "rate(llamacpp:tokens_predicted_total[10s])", "legendFormat": "Generated Tokens/s"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+      },
+      {
+        "id": 6,
+        "title": "Cumulative Prompt Tokens",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:prompt_tokens_total", "legendFormat": "Total Prompt Tokens"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}}, "overrides": []}
+      },
+      {
+        "id": 7,
+        "title": "Cumulative Generated Tokens",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:tokens_predicted_total", "legendFormat": "Total Generated Tokens"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]}}, "overrides": []}
+      },
+      {
+        "id": 8,
+        "title": "Total Decode Calls",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 16},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:n_decode_total", "legendFormat": "Decode Calls"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange"}]}}, "overrides": []}
+      },
+      {
+        "id": 9,
+        "title": "Total Request Count",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 16},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"refId": "A", "expr": "llamacpp:requests_processing + llamacpp:requests_deferred", "legendFormat": "Active + Queued"}
+        ],
+        "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}]}}, "overrides": []}
+      }
+    ]
+  },
+  "folderId": 0,
+  "overwrite": true
+}
