@@ -74,7 +74,7 @@
 ```bash
 python3 -m venv venv_cs599_lab6
 source venv_cs599_lab6/bin/activate
-pip install openai aiohttp mcp sqlite3
+pip install openai aiohttp mcp
 ```
 
 ### 2.2 LLM 推理服务

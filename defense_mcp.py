@@ -16,7 +16,10 @@ import re
 import sqlite3
 import sys
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv()
 
 # ──────────────────────────────────────────────
 #  配置

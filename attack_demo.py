@@ -17,7 +17,10 @@ import json
 import os
 import sqlite3
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv()
 
 # ──────────────────────────────────────────────
 #  配置
