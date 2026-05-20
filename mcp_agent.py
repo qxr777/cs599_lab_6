@@ -79,7 +79,7 @@ def convert_mcp_tools_to_openai(mcp_tools):
 #  主 Agent 逻辑
 # ──────────────────────────────────────────────
 
-async def run_mcp_agent(user_prompt: str):
+async def run_mcp_agent(user_prompt: str, messages: list, llm_tools: list) -> str:
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -88,25 +88,13 @@ async def run_mcp_agent(user_prompt: str):
         args=["mcp_server.py"],
     )
 
+    messages.append({"role": "user", "content": user_prompt})
+
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             # 握手：初始化
             await session.initialize()
             print("[MCP] Server initialized via stdio transport")
-
-            # 动态发现工具
-            tools_result = await session.list_tools()
-            tool_names = [t.name for t in tools_result.tools]
-            print(f"[MCP] Discovered tools: {tool_names}")
-
-            # 转换为 OpenAI Schema
-            llm_tools = convert_mcp_tools_to_openai(tools_result.tools)
-
-            # 构建对话
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
 
             client = OpenAI()
 
@@ -145,7 +133,7 @@ async def run_mcp_agent(user_prompt: str):
                     continue
 
                 # 最终回复
-                return assistant_message.content
+                return assistant_message.content or ""
 
 
 # ──────────────────────────────────────────────
@@ -162,6 +150,28 @@ def main():
     print("传输层: stdio / JSON-RPC")
     print("输入 'quit' 或 'exit' 退出\n")
 
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # 首次连接时动态发现工具
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=["mcp_server.py"],
+    )
+
+    async def discover_tools():
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as s:
+                await s.initialize()
+                tools_result = await s.list_tools()
+                tool_names = [t.name for t in tools_result.tools]
+                print(f"[MCP] Discovered tools: {tool_names}")
+                return convert_mcp_tools_to_openai(tools_result.tools)
+
+    llm_tools = asyncio.run(discover_tools())
+
     while True:
         try:
             user_input = input("👤 你: ").strip()
@@ -175,7 +185,7 @@ def main():
             print("再见！")
             break
 
-        reply = asyncio.run(run_mcp_agent(user_input))
+        reply = asyncio.run(run_mcp_agent(user_input, messages, llm_tools))
         print(f"\n🤖 助手: {reply}\n")
 
 
