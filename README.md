@@ -64,6 +64,11 @@ python mcp_agent.py
 
 MCP Agent 会自动通过 stdio 启动 `mcp_server.py` 子进程。
 
+或
+```bash
+npx @modelcontextprotocol/inspector python mcp_server.py --host 127.0.0.1
+```
+
 **MCP 协议三次握手：**
 1. `initialize` — Client/Server 握手
 2. `tools/list` — 动态发现工具
