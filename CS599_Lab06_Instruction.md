@@ -10,9 +10,11 @@
 - [1. 实验概述](#1-实验概述)
 - [2. 环境准备](#2-环境准备)
 - [3. 实验第一阶段：原生工具调用 (Native Path)](#3-实验第一阶段原生工具调用-native-path)
-- [4. 实验第二阶段：MCP 协议集成 (Standardized Path)](#4-实验第二阶段mcp-协议集成-standardized-path)
-- [5. 实验第三阶段：安全攻防——间接提示词注入](#5-实验第三阶段安全攻防间接提示词注入)
-- [6. 实验总结与综合思考](#6-实验总结与综合思考)
+  - [3.7 Pydantic 增强版：Schema 自动生成与 Strict Mode](#37-pydantic-增强版schema-自动生成与-strict-mode)
+- [4. 实验 1.5——Thinking Mode + 推理链状态管理](#4-实验-15thinking-mode--推理链状态管理)
+- [5. 实验第二阶段：MCP 协议集成 (Standardized Path)](#5-实验第二阶段mcp-协议集成-standardized-path)
+- [6. 实验第三阶段：安全攻防——间接提示词注入](#6-实验第三阶段安全攻防间接提示词注入)
+- [7. 实验总结与综合思考](#7-实验总结与综合思考)
 - [附录 A：术语表](#附录-a术语表)
 - [附录 B：故障排查](#附录-b故障排查)
 
@@ -92,10 +94,41 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"
 **方式 B：本地 llama-server（推荐用于可控实验）**
 
 ```bash
+# 用于实验一/二/三（普通工具调用）
 llama-server -m ~/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
     --port 8080 \
     --n-gpu-layers 99 \
     --ctx-size 8192
+```
+
+**方式 C：DeepSeek R1 Distill（用于实验 1.5 Thinking Mode）**
+
+```bash
+# 如已有模型文件，直接加载
+llama-server -m ~/models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf \
+    --port 8080 \
+    --n-gpu-layers 99 \
+    --ctx-size 8192
+
+# 如未下载，使用 huggingface-cli 获取
+# huggingface-cli download bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF \
+#     DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf --local-dir ~/models/
+```
+
+`.env` 配置文件说明：
+
+```bash
+# 通用配置
+OPENAI_API_KEY=sk-fake-key
+OPENAI_BASE_URL=http://localhost:8080/v1
+
+# 普通 Agent 使用的模型（实验一/二/三）
+OPENAI_MODEL=qwen2.5-7b
+
+# Thinking Mode 专用模型（实验 1.5）
+OPENAI_THINKING_MODEL=DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
+# 如推理模型跑在不同端口，取消下行注释：
+# OPENAI_THINKING_BASE_URL=http://localhost:8081/v1
 ```
 
 确认服务就绪：
@@ -109,13 +142,16 @@ curl http://localhost:8080/health
 
 ```
 lab_6/
-├── native_agent.py          # 实验一：原生工具调用 Agent
-├── mcp_server.py            # 实验二：MCP Server 端
-├── mcp_agent.py             # 实验二：MCP Client 端
-├── attack_demo.py           # 实验三：间接注入攻击演示
-├── defense_native.py        # 实验三：原生架构防御
-├── defense_mcp.py           # 实验三：MCP 架构防御
-├── product_reviews.db       # 模拟商品评价数据库
+├── native_agent.py              # 实验一：原生工具调用 Agent
+├── native_agent_pydantic.py     # 实验一扩展：Pydantic + Strict Mode 增强版
+├── native_agent_thinking.py     # 实验 1.5：Thinking Mode + 推理链状态管理
+├── mcp_server.py                # 实验二：MCP Server 端
+├── mcp_agent.py                 # 实验二：MCP Client 端
+├── attack_demo.py               # 实验三：间接注入攻击演示
+├── defense_native.py            # 实验三：原生架构防御
+├── defense_mcp.py               # 实验三：MCP 架构防御
+├── product_reviews.db           # 模拟商品评价数据库
+├── .env                         # 环境变量配置
 └── requirements.txt
 ```
 
