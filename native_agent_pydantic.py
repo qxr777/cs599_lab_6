@@ -205,8 +205,21 @@ def get_inventory(product_id: str) -> InventoryResult | ToolError:
     return InventoryResult(product_id=product_id, name=row[0], price=row[1], stock=row[2])
 
 
-def process_order(product_id: str, quantity: int) -> OrderResult:
+def process_order(product_id: str, quantity: int) -> OrderResult | ToolError:
     print(f"[警告] 高危操作：直接扣款下单！")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT stock FROM products WHERE product_id = ?", (product_id,))
+    row = c.fetchone()
+    if row is None:
+        conn.close()
+        return ToolError(error=f"商品 {product_id} 不存在")
+    if row[0] < quantity:
+        conn.close()
+        return ToolError(error=f"库存不足，当前库存 {row[0]}")
+    c.execute("UPDATE products SET stock = stock - ? WHERE product_id = ?", (quantity, product_id))
+    conn.commit()
+    conn.close()
     return OrderResult(
         order_id=f"ORD-{uuid.uuid4().hex[:8].upper()}",
         product_id=product_id,

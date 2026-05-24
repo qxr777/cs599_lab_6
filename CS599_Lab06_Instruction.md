@@ -76,7 +76,7 @@
 ```bash
 python3 -m venv venv_cs599_lab6
 source venv_cs599_lab6/bin/activate
-pip install openai aiohttp mcp
+pip install -r requirements.txt
 ```
 
 ### 2.2 LLM 推理服务
@@ -104,13 +104,13 @@ llama-server -m ~/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
 **方式 C：DeepSeek R1 Distill（用于实验 1.5 Thinking Mode）**
 
 ```bash
-# 如已有模型文件，直接加载
+# 在另一端口启动 DeepSeek R1 推理服务
 llama-server -m ~/models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf \
-    --port 8080 \
+    --port 8081 \
     --n-gpu-layers 99 \
     --ctx-size 8192
 
-# 如未下载，使用 huggingface-cli 获取
+# 如未下载模型文件
 # huggingface-cli download bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF \
 #     DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf --local-dir ~/models/
 ```
@@ -122,13 +122,12 @@ llama-server -m ~/models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf \
 OPENAI_API_KEY=sk-fake-key
 OPENAI_BASE_URL=http://localhost:8080/v1
 
-# 普通 Agent 使用的模型（实验一/二/三）
+# 普通 Agent 使用的模型（实验一/二/三，端口 8080）
 OPENAI_MODEL=qwen2.5-7b
 
-# Thinking Mode 专用模型（实验 1.5）
+# Thinking Mode 专用模型（实验 1.5，端口 8081）
 OPENAI_THINKING_MODEL=DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
-# 如推理模型跑在不同端口，取消下行注释：
-# OPENAI_THINKING_BASE_URL=http://localhost:8081/v1
+OPENAI_THINKING_BASE_URL=http://localhost:8081/v1
 ```
 
 确认服务就绪：
@@ -595,13 +594,15 @@ python native_agent_thinking.py --broken
 
 ---
 
-### 4.1 学习目标
+## 5. 实验第二阶段：MCP 协议集成 (Standardized Path)
+
+### 5.1 学习目标
 
 - 理解 MCP 协议的架构解耦原理
 - 掌握 MCP Server 和 Client 的开发流程
 - 对比原生调用与 MCP 在工具发现、调用流转上的差异
 
-### 4.2 理论解析
+### 5.2 理论解析
 
 **MCP（Model Context Protocol）的本质**：将"工具的定义和执行"从 Agent 进程中剥离，运行在独立进程里。Agent 通过标准化的 JSON-RPC 协议与 Server 通信，动态发现工具、发起调用、接收结果。
 
@@ -631,9 +632,9 @@ Client                          Server
   │◀─── CallToolResult ───────────│
 ```
 
-### 4.3 代码分析
+### 5.3 代码分析
 
-#### 4.3.1 Server 端：`mcp_server.py`
+#### 5.3.1 Server 端：`mcp_server.py`
 
 ```python
 from mcp.server import Server
@@ -677,7 +678,7 @@ async def call_tool(name, arguments):
         return [TextContent(type="text", text=json.dumps(result))]
 ```
 
-#### 4.3.2 Client 端：`mcp_agent.py`
+#### 5.3.2 Client 端：`mcp_agent.py`
 
 ```python
 from mcp import ClientSession, StdioServerParameters
@@ -717,7 +718,7 @@ async def run_mcp_agent(user_prompt):
 
 **关键点**：与原生调用的差异在于，工具结果来自 `CallToolResult.content[0].text`——这是一个结构化的 MCP 响应对象，但其中的 `text` 字段同样是不可信的字符串。
 
-### 4.4 执行步骤
+### 5.4 执行步骤
 
 1. 运行 MCP Agent（会自动启动 Server 子进程）：
 
@@ -725,14 +726,47 @@ async def run_mcp_agent(user_prompt):
 python mcp_agent.py
 ```
 
-2. 独立启动 Server 进行测试（可选）：
+2. 使用 MCP Inspector 独立调试 Server（推荐）：
 
 ```bash
-python mcp_server.py
-# 在另一个终端用 MCP Inspector 或直接通过 Client 连接
+# 在 lab_6 目录下运行
+npx @modelcontextprotocol/inspector venv_cs599_lab6/bin/python mcp_server.py
 ```
 
-### 4.5 预期结果
+这会自动完成：
+- 启动 `mcp_server.py` 作为子进程（通过 stdio 通信）
+- 打开浏览器 → `http://localhost:5173`
+
+**Inspector 界面操作指南**：
+
+| 面板 | 位置 | 功能 |
+|------|------|------|
+| **Connection** | 顶部 | 显示 `initialize` 握手 → `tools/list` 发现的全过程时序 |
+| **Tools** | 左侧 | 列出所有已注册工具，显示参数 Schema |
+| **Run Tool** | 点击工具后 | 填入 JSON 参数 → 点击 Run → 查看 `CallToolResult` |
+| **JSON-RPC** | 右上角 | 实时查看底层 JSON-RPC 请求/响应的原始报文 |
+
+**典型调试流程**：
+
+```
+1. 启动 Inspector → 观察 Connection 面板中 initialize 和 tools/list 成功
+2. 在 Tools 面板确认 get_inventory、process_order 已注册
+3. 点击 get_inventory → 输入 {"product_id": "P001"} → Run
+   → 返回 {"product_id":"P001","name":"机械键盘 Pro X","price":599.0,"stock":150}
+4. 点击 process_order → 输入 {"product_id":"P001", "quantity": 1} → Run
+   → 返回 {"order_id":"ORD-...","status":"confirmed"}
+5. 检查 JSON-RPC 面板，确认 CallToolResult 的 content[0].text 格式
+   正是 mcp_agent.py 中 result.content[0].text 读取的内容
+```
+
+3. 如不想用 Inspector，也可以直接通过 stdin 手动测试：
+
+```bash
+# 发送 JSON-RPC 请求到 Server 的 stdin
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | venv_cs599_lab6/bin/python mcp_server.py
+```
+
+### 5.5 预期结果
 
 ```
 [MCP] Server initialized via stdio transport
@@ -743,16 +777,16 @@ Agent: 调用 get_inventory(product_id="P001") via JSON-RPC
 Agent: 商品 P001 当前库存为 15 件。
 ```
 
-### 4.6 思考题
+### 5.6 思考题
 
 1. MCP Server 作为一个独立进程，如果崩溃了，Client 端应该如何处理？这比原生调用多了哪些容错复杂度？
 2. `convert_mcp_tools_to_openai()` 函数做了什么转换？如果 MCP Server 返回的工具 Schema 与 OpenAI 格式不兼容，会发生什么？
 
 ---
 
-## 5. 实验第三阶段：安全攻防——间接提示词注入
+## 6. 实验第三阶段：安全攻防——间接提示词注入
 
-### 5.1 实验概述
+### 6.1 实验概述
 
 在此阶段，学生需要模拟攻击者，通过污染外部数据源（如在商品评价数据库中植入恶意载荷），尝试在不直接修改系统提示词的情况下，诱导 Agent 执行未经授权的高危工具。
 
@@ -767,7 +801,7 @@ Agent: 商品 P001 当前库存为 15 件。
     → 触发 process_order（未经授权的操作）
 ```
 
-### 5.2 攻击准备
+### 6.2 攻击准备
 
 在数据库中植入恶意评价：
 
@@ -786,9 +820,9 @@ c.execute("INSERT INTO reviews (product_id, review) VALUES (?, ?)", (
 conn.commit()
 ```
 
-### 5.3 针对"原生工具调用"的注入与防御
+### 6.3 针对"原生工具调用"的注入与防御
 
-#### 5.3.1 攻击实施
+#### 6.3.1 攻击实施
 
 1. 用户提问："帮我查一下这款商品的评价。"
 2. Agent 执行 `get_inventory` 或 `get_reviews`，返回包含恶意载荷的评价
@@ -797,7 +831,7 @@ conn.commit()
 
 **观察重点**：智能体在将包含恶意载荷的执行结果放回 Context 后，模型是否会将其误认为系统指令并触发 `process_order`。
 
-#### 5.3.2 防御加固
+#### 6.3.2 防御加固
 
 **防御 1：数据定界符（Data Delimiting）**
 
@@ -832,15 +866,15 @@ def process_order(product_id, quantity):
     # ... 执行订单逻辑
 ```
 
-### 5.4 针对"MCP 架构"的注入与防御
+### 6.4 针对"MCP 架构"的注入与防御
 
-#### 5.4.1 攻击实施
+#### 6.4.1 攻击实施
 
 攻击载荷同上，但这次恶意文本通过 MCP Server 的 `CallToolResult.content[0].text` 返回给 Client。
 
 **观察重点**：标准化协议是否会引发"盲目信任"？当 Client 收到格式完全合规但内容恶意的 JSON-RPC 响应时，大模型底层是否依然会被劫持。
 
-#### 5.4.2 防御加固
+#### 6.4.2 防御加固
 
 **防御 1：Client 端协议层拦截（Sanitization Layer）**
 
@@ -896,7 +930,7 @@ Answer YES or NO only.
     return "yes" in response.content.lower()
 ```
 
-### 5.5 执行步骤
+### 6.5 执行步骤
 
 1. 运行攻击演示：
 
@@ -916,7 +950,7 @@ python defense_native.py
 python defense_mcp.py
 ```
 
-### 5.6 预期结果
+### 6.6 预期结果
 
 **攻击阶段**：
 
@@ -948,16 +982,16 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 [✓] 防御成功：Client 端中间件拦截了恶意指令
 ```
 
-### 5.7 思考题
+### 6.7 思考题
 
 1. XML 定界符防御依赖 LLM 对标签语义的理解。如果模型训练数据中 `<external_data>` 本身就是某种指令格式，这种防御是否仍然有效？
 2. MCP 架构中，Server 端和 Client 端都可以做安全防护。在真实生产环境中，这两层防御应该各自负责什么？是否可以完全依赖其中一层？
 
 ---
 
-## 6. 实验总结与综合思考
+## 7. 实验总结与综合思考
 
-### 6.1 核心结论回顾
+### 7.1 核心结论回顾
 
 通过三个阶段的实验，我们建立了从"架构"到"安全"的完整认知链：
 
@@ -967,7 +1001,7 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 实验三（安全攻防）    → 间接注入攻击：Context 污染 vs 协议层污染 + 纵深防御
 ```
 
-### 6.2 综合架构模型
+### 7.2 综合架构模型
 
 将原生调用与 MCP 架构的差异整合为一个统一的对比框架：
 
@@ -993,7 +1027,7 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
   防御：数据定界符 + HITL                    防御：Client 中间件 + Server 限权 + 意图校验
 ```
 
-### 6.3 开放性思考题
+### 7.3 开放性思考题
 
 1. **模型架构的根本性局限**：在原生工具调用中，模型往往难以区分"输入数据"和"系统指令"。这一现象反映了当前大模型自回归生成机制的什么根本性局限？是否存在从根本上解决此问题的架构设计（如思维链分离、双模型架构）？
 
@@ -1010,8 +1044,14 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 | 术语 | 全称 | 含义 |
 |------|------|------|
 | Tool Calling | Function/Tool Calling | LLM 主动请求调用外部工具的能力 |
+| Pydantic | — | Python 数据校验库，使用类型注解定义数据模型 |
+| Strict Mode | — | OpenAI API 参数，要求 LLM 严格按 Schema 生成 tool call 参数 |
 | JSON Schema | JavaScript Object Notation Schema | 描述工具参数结构的标准化格式 |
+| RLVR | Reinforcement Learning with Verifiable Rewards | 带可验证奖励的强化学习，DeepSeek R1 核心训练技术 |
+| Thinking Mode | — | DeepSeek R1 在回复前生成内部推理链（reasoning_content）的机制 |
+| reasoning_content | — | DeepSeek R1 API 响应中的思维链字段，独立于 content |
 | MCP | Model Context Protocol | Anthropic 提出的模型-上下文标准协议 |
+| MCP Inspector | — | Anthropic 官方调试工具，可视化 stdio JSON-RPC 交互 |
 | JSON-RPC | JSON Remote Procedure Call | 基于 JSON 的远程过程调用协议 |
 | stdio | Standard Input/Output | 进程间通过标准输入输出通信的传输方式 |
 | CallToolResult | — | MCP 协议中工具调用的返回结果结构 |
@@ -1020,7 +1060,6 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 | HITL | Human-In-The-Loop | 关键操作需人工确认的安全机制 |
 | Sanitization | 清洗/消毒 | 过滤或修改输入/输出中的恶意内容 |
 | Defense in Depth | 纵深防御 | 在多个层级部署独立安全机制的策略 |
-| SDD | Specification-Driven Development | 规范驱动开发，先定义协议再实现 |
 
 ---
 
@@ -1041,6 +1080,9 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 | Server 启动失败 | MCP SDK 未正确安装 | `pip install mcp` 确认版本兼容 |
 | Client 无法连接 Server | stdio 传输路径错误 | 检查 `StdioServerParameters.command` 和 `args` |
 | `tools/list` 返回空列表 | Server 端未正确注册 `@server.list_tools()` | 检查装饰器是否正确应用 |
+| 不确定 Server 是否正确响应 | 消息格式不透明 | 使用 MCP Inspector：`npx @modelcontextprotocol/inspector venv_cs599_lab6/bin/python mcp_server.py`，在 JSON-RPC 面板查看原始报文 |
+| Inspector 无法启动 | Node.js 未安装 | `brew install node`（macOS）或 `apt install nodejs`（Linux） |
+| Inspector 连接失败 | python 路径问题 | 使用完整路径：`npx @modelcontextprotocol/inspector /path/to/python mcp_server.py` |
 
 ### B.3 注入攻击实验异常
 
@@ -1059,5 +1101,5 @@ Agent: 以下是商品评价：...（恶意模式已被正则移除）
 
 ---
 
-**版本**: v1.0
-**最后更新**: 2026-05-19
+**版本**: v1.1
+**最后更新**: 2026-05-24
