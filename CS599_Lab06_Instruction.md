@@ -283,9 +283,317 @@ Agent: 订单已确认，订单号 ORD-20260519-001。
 1. 如果新增一个工具（如 `get_user_balance`），需要修改哪些代码？这反映了什么架构缺陷？
 2. 在 `content: str(result)` 这一步，如果 result 是一个很大的 JSON 对象，会对 Context Window 产生什么影响？
 
+### 3.7 Pydantic 增强版：Schema 自动生成与 Strict Mode
+
+#### 3.7.1 为什么需要 Pydantic？
+
+原始 `native_agent.py` 有两个问题：
+
+1. **手写 Schema 脆弱**：60 行手写 JSON Schema，改参数需要同步修改多处
+2. **参数无校验**：LLM 返回 `quantity: "abc"` 时 `json.loads` 不报错，传入函数才崩溃
+
+Pydantic 将"信任 LLM"变为"验证 LLM"，在三个层面引入类型安全：
+
+| 层面 | 原始版 | Pydantic 版 |
+|------|--------|-------------|
+| Schema 生成 | 手写 dict | `BaseModel.model_json_schema()` 自动生成 |
+| 参数校验 | `json.loads` 后直接 `**args` | `model_validate()` 校验类型/范围/长度 |
+| 返回值 | 裸 `json.dumps(dict)` | Pydantic 模型 `.model_dump_json()` |
+
+#### 3.7.2 代码分析
+
+打开 `native_agent_pydantic.py`，关注以下关键设计：
+
+**（1）声明式参数定义**
+
+```python
+from pydantic import BaseModel, Field
+
+class GetInventoryInput(BaseModel):
+    product_id: str = Field(..., description="商品 ID", min_length=1, max_length=20)
+
+class ProcessOrderInput(BaseModel):
+    product_id: str = Field(..., description="商品 ID", min_length=1, max_length=20)
+    quantity: int = Field(..., description="购买数量", ge=1, le=999)
+```
+
+`Field` 中的约束（`ge`, `le`, `min_length`, `description`）直接映射到 JSON Schema 的 `minimum`、`maximum`、`minLength`、`description`。
+
+**（2）Strict Mode 工具 Schema 生成**
+
+```python
+def pydantic_to_openai_tool(name: str, description: str,
+                             model: type[BaseModel], strict: bool = True) -> dict:
+    raw_schema = model.model_json_schema()
+    parameters = _clean_schema_for_openai(raw_schema, strict=True)
+    # strict=True 时：
+    #   1. 所有 object 节点追加 "additionalProperties": false
+    #   2. function 定义追加 "strict": true
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "strict": True,
+        },
+    }
+```
+
+**Strict Mode (`"strict": true`) 的作用**：告诉 LLM API 服务端在生成阶段就拒绝不符合 Schema 的参数，阻断以下风险：
+- 类型错误（`quantity: "abcdef"`）
+- 范围越界（`quantity: 0` 当约束为 `ge=1`）
+- 额外字段注入（`quantity: 1, "__override": true`——被 `additionalProperties: false` 拦截）
+
+与客户端 Pydantic 校验形成双重防线：服务端约束 + 客户端校验。
+
+**（3）运行时参数校验**
+
+```python
+def execute_tool(func_name: str, raw_args: str) -> str:
+    args_dict = json.loads(raw_args)
+    input_model, handler = _tool_registry[func_name]
+
+    # Pydantic 运行时校验，捕获 ValidationError
+    validated = input_model.model_validate(args_dict)
+    # 非法参数会在此处捕获并返回结构化错误信息
+
+    result = handler(**validated.model_dump())
+    return result.model_dump_json()  # 返回结构化 Pydantic 模型
+```
+
+**（4）结构化返回值**
+
+```python
+class InventoryResult(BaseModel):
+    product_id: str
+    name: str
+    price: float
+    stock: int
+
+class ToolError(BaseModel):
+    error: str
+
+def get_inventory(product_id: str) -> InventoryResult | ToolError:
+    # ... 返回类型明确，调用方知道结构
+```
+
+#### 3.7.3 执行步骤
+
+```bash
+# 使用 Pydantic 增强版 Agent
+python native_agent_pydantic.py
+```
+
+#### 3.7.4 预期结果
+
+```
+Strict Mode: 开启
+用户: 帮我查一下 P001 的库存
+Agent: 调用 get_inventory({"product_id": "P001"})
+执行结果: {"product_id":"P001","name":"机械键盘 Pro X","price":599.0,"stock":150}
+Agent: 机械键盘 Pro X 目前库存 150 件，价格 599 元。
+```
+
+若 LLM 生成非法参数（如 `{"product_id": "", "quantity": -1}`），输出：
+
+```
+执行结果: {"error": "参数校验失败", "details": [
+  {"field": "product_id", "message": "String should have at least 1 character"},
+  {"field": "quantity", "message": "Input should be greater than or equal to 1"}
+]}
+```
+
+#### 3.7.5 思考题
+
+1. Strict Mode 的 `additionalProperties: false` 为什么是安全机制而不只是 Schema 约束？结合间接提示注入攻击思考。
+2. `pydantic_to_openai_tool()` 函数中 `$defs`、`title`、`default` 等 JSON Schema 元数据为什么需要清理？OpenAI API 对哪些 Schema 字段敏感？
+
 ---
 
-## 4. 实验第二阶段：MCP 协议集成 (Standardized Path)
+## 4. 实验 1.5——Thinking Mode + 推理链状态管理
+
+> [!IMPORTANT]
+> **前置条件**：本实验需要 DeepSeek R1 Distill 模型（`DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf`）。请确认已按 [2.2 节方式 C](#22-llm-推理服务) 配置推理服务。
+
+### 4.1 学习目标
+
+- 理解 DeepSeek R1/V3 基于 RLVR（带可验证奖励的强化学习）的 Thinking Mode 机制
+- 掌握 `reasoning_content` 字段在工具调用多轮交互中的状态管理挑战
+- 通过 Proper / Broken 双模式对比，观察推理链断裂对 Agent 行为的破坏性影响
+
+### 4.2 理论解析
+
+**什么是 Thinking Mode？**
+
+DeepSeek R1/V3 基于 RLVR（Reinforcement Learning with Verifiable Rewards）技术训练，模型在给出最终答案之前会生成一段内部推理过程。这段过程存储在 `reasoning_content` 字段中——它独立于用户可见的 `content` 字段，是模型的"草稿纸"。
+
+**Thinking Mode + 工具调用的复杂性**：
+
+```
+Round 1:
+  模型 → 生成 reasoning_content₁（"用户想查P001库存，先调用get_inventory"）
+  模型 → tool_call: get_inventory("P001")
+  客户端 → 执行工具，返回结果
+
+Round 2:
+  客户端 → 必须将 reasoning_content₁ 随 assistant 消息一起回传
+  模型 → 读取 reasoning_content₁，恢复推理上下文
+  模型 → 基于工具结果继续推理："库存150件，价格599<600，应调用process_order"
+  模型 → tool_call: process_order("P001", quantity=1)
+
+Round 3:
+  客户端 → 回传 reasoning_content₁ + reasoning_content₂
+  模型 → 基于完整推理链生成最终回答
+```
+
+**关键挑战**：每一次工具调用子轮次之间，客户端必须将上一子轮次的 `reasoning_content` 完整无损地回传给 API。如果丢失，推理链断裂——模型不知道它"刚才想到了哪里"。
+
+### 4.3 代码架构
+
+`native_agent_thinking.py` 的设计：
+
+```
+┌─────────────────────────────────────────────┐
+│              单轮交互流程                     │
+│                                             │
+│  API 调用（无 tools 参数）                    │
+│      │                                      │
+│      ├──→ message.reasoning_content          │
+│      │    （DeepSeek 原生思维链字段）          │
+│      │                                      │
+│      ├──→ message.content                    │
+│      │    解析 <tool> 标签 → 提取工具调用      │
+│      │                                      │
+│      ├──→ execute_tool() → Pydantic 校验执行  │
+│      │                                      │
+│      └──→ 构建下一轮 messages：               │
+│            proper:  保留 reasoning_content    │
+│            broken:  剥离 reasoning_content    │
+└─────────────────────────────────────────────┘
+```
+
+**两种模式的对比**：
+
+| 维度 | Proper 模式 | Broken 模式 |
+|------|------------|-------------|
+| reasoning_content | 保留在 assistant 消息中回传 | 从消息中剥离（模拟客户端 bug） |
+| 模型可见上下文 | 完整推理链 + 工具结果 | 仅工具结果（无推理上下文） |
+| 预期行为 | 多步任务正确完成 | 任务目标漂移或死循环 |
+
+**工具调用方式**：由于 DeepSeek R1 Distill 模型对 OpenAI 原生 `tools` 参数支持不稳定，本实验采用文本级工具调用——通过 System Prompt 定义 `<tool>` 标签格式，从 `content` 文本中正则解析工具调用。`reasoning_content` 仍从 API 原生字段读取。
+
+### 4.4 代码分析
+
+**（1）System Prompt 驱动工具调用**
+
+```python
+SYSTEM_PROMPT = """你是一个商品查询助手，操作库存数据库。
+
+工具格式（必须严格使用，禁止编造数据）：
+
+<tool>
+get_inventory
+{"product_id": "P001"}
+</tool>
+
+<tool>
+process_order
+{"product_id": "P001", "quantity": 1}
+</tool>
+
+硬规则：
+...
+5. 收到工具结果后，必须继续调用下一个工具直到任务完成（不要提前终止）
+"""
+```
+
+**（2）读取原生 reasoning_content**
+
+```python
+response = client.chat.completions.create(model=MODEL, messages=messages)
+
+msg = response.choices[0].message
+msg_raw = msg.model_dump()
+reasoning = msg_raw.get("reasoning_content", "")  # DeepSeek 原生字段
+content = msg.content or ""
+```
+
+**（3）reasoning_content 的保留/剥离逻辑**
+
+```python
+assistant_msg = msg_raw.copy()
+if not preserve:  # broken 模式
+    assistant_msg.pop("reasoning_content", None)  # 模拟客户端 bug
+    print("  ⚡ [broken] reasoning_content 已剥离")
+
+messages.append(assistant_msg)
+```
+
+### 4.5 执行步骤
+
+```bash
+# Proper 模式（推理链完整传递）
+python native_agent_thinking.py --proper
+
+# Broken 模式（推理链故意丢弃）
+python native_agent_thinking.py --broken
+```
+
+测试查询：`帮我查机械键盘库存，如果价格低于600就下单`
+
+### 4.6 预期结果
+
+**Proper 模式**（推理链完整）：
+
+```
+[子轮次 1] 推理
+用户想查机械键盘(P001)库存，价格低于600则下单...
+[子轮次 1] 工具调用
+工具: get_inventory  参数: {"product_id": "P001"}
+结果: {"product_id":"P001","name":"机械键盘 Pro X","price":599.0,"stock":150}
+
+[子轮次 2] 推理
+库存150件，价格599元，低于600元阈值，应调用process_order...
+[子轮次 2] 工具调用
+工具: process_order  参数: {"product_id":"P001","quantity":1}
+结果: {"order_id":"ORD-5C49598E","product_id":"P001","quantity":1,"status":"confirmed"}
+
+最终回答: 订单已成功提交，订单号为 ORD-5C49598E。请提供收货地址以便完成发货。
+[子轮次: 3 | 推理链完整]
+```
+
+**Broken 模式**（推理链断裂）：
+
+```
+[子轮次 1] 推理
+用户想查机械键盘库存，价格低于600则下单...
+  ⚡ [broken] reasoning_content 已剥离
+[子轮次 1] 工具调用
+工具: get_inventory  参数: {"product_id": "P003"}  ← 错误的商品ID！
+
+[子轮次 2] 推理
+（丢失了之前的推理上下文，重新猜测用户意图）
+  ⚡ [broken] reasoning_content 已剥离
+[子轮次 2] 工具调用
+工具: get_inventory  参数: {"product_id": "P003"}  ← 重复查询不存在的商品
+
+...（持续调用不存在的 P003/P005，进入死循环）
+
+最终回答: {"order_id":"ORD-6FGH9783","product_id":"P005","quantity":1,...}
+                                        ← 幻觉订单号，商品ID完全错误
+[子轮次: 5 | 推理链已断裂]
+```
+
+**关键观察**：broken 模式下模型失去目标导向能力，从 `P001` 偏离到 `P003` / `P005`，反复调用不存在的商品，最终输出幻觉 JSON 而非自然语言。
+
+### 4.7 思考题
+
+1. 在 broken 模式的输出中，模型的第一轮推理仍提到 P001，但第二轮的 `get_inventory` 却查了 P003。这说明了模型决策的什么机制？为什么原始 user prompt 中的信息不足以防止这种偏离？
+2. 真实的 DeepSeek R1 API 中 `reasoning_content` 作为独立字段存在。如果使用文本注入方式（把推理内容拼进 `content`）来模拟，会带来什么问题？（提示：Context Window 膨胀、角色混淆）
+3. 如果你的 Agent 需要连续调用 10 次工具，reasoning_content 的累积会导致什么工程问题？有哪些可能的优化策略？
+
+---
 
 ### 4.1 学习目标
 
