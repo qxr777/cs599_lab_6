@@ -951,7 +951,7 @@ python defense_mcp.py --skip-clean --skip-server
 python defense_mcp.py --skip-clean --skip-intent --skip-server
 ```
 
-**防御 1：Client 端协议层拦截（Sanitization Middleware）**
+**防御 1：Client 端协议层拦截（Middleware — 数据入口防线）**
 
 在 Client 接收到 MCP 响应后、提交给 LLM 前插入中间件。**关键修复**：不能直接在 JSON 字符串上跑正则——`json.dumps` 会将 `\n` 转义为 `\\n`，导致所有依赖换行的正则失效。必须先 `json.loads` 解析出每条评价文本，逐条匹配替换，再 `json.dumps` 拼接：
 
@@ -984,25 +984,7 @@ def sanitize_mcp_response(text: str) -> str:
                 # ...
 ```
 
-**防御 2：Server 端最小权限原则**
-
-通过 `--defense` 旗标启动 MCP Server，`process_order` 不真执行扣款，改为返回 `pending_confirmation`：
-
-```python
-# mcp_server.py --defense 启动时
-DEFENSE_MODE = "--defense" in sys.argv
-
-@server.call_tool()
-async def call_tool(name, arguments):
-    if name == "process_order" and DEFENSE_MODE:
-        return [TextContent(type="text", text=json.dumps({
-            "status": "pending_confirmation",
-            "message": "Order requires user confirmation before execution",
-            "order_details": arguments
-        }))]
-```
-
-**防御 3：双重意图验证**
+**防御 2：双重意图验证（工具调用防线）**
 
 在 Client 端增加独立的"意图校验 Agent"，判断用户原始请求是否授权了被调用的工具：
 
@@ -1022,6 +1004,24 @@ Answer YES or NO only."""
 ```
 
 当用户请求 "帮我看评价" 而模型尝试调用 `process_order` 时，意图校验会返回 NO，Client 直接拒绝转发到 Server。
+
+**防御 3：Server 端最小权限原则（结构化最后防线）**
+
+通过 `--defense` 旗标启动 MCP Server，`process_order` 不真执行扣款，改为返回 `pending_confirmation`：
+
+```python
+# mcp_server.py --defense 启动时
+DEFENSE_MODE = "--defense" in sys.argv
+
+@server.call_tool()
+async def call_tool(name, arguments):
+    if name == "process_order" and DEFENSE_MODE:
+        return [TextContent(type="text", text=json.dumps({
+            "status": "pending_confirmation",
+            "message": "Order requires user confirmation before execution",
+            "order_details": arguments
+        }))]
+```
 
 ### 6.5 执行步骤
 
@@ -1043,16 +1043,16 @@ python defense_native.py
 python defense_mcp.py
 ```
 
-4. 逐层测试 MCP 防御（从 Layer 3 开始）：
+4. 逐层测试 MCP 防御：
 
 ```bash
-# 测试 Layer 3 意图校验（跳过 Middleware 和 Server）
+# 测试防线 2 Intention（跳过防线 1 Middleware 和防线 3 Server）
 python defense_mcp.py --skip-clean --skip-server
 
-# 测试 Layer 2 Server 端最小权限（跳过 Middleware 和 Intent）
+# 测试防线 3 Server 端最小权限（跳过防线 1 Middleware 和防线 2 Intent）
 python defense_mcp.py --skip-clean --skip-intent
 
-# 测试 Layer 1 Middleware（全开，观察其他层是否未触发 = 前面已拦截）
+# 测试防线 1 Middleware（全开，观察后面防线是否未触发 = 前面已拦截）
 python defense_mcp.py
 ```
 
@@ -1094,32 +1094,32 @@ python defense_mcp.py
 [🧹 Middleware] Sanitizing response... [BLOCKED]
 
 📊 防御层触发状态
-  响应清洗 (Middleware):         ✅ 触发 — 清洗了 11 处恶意模式
-  Server 端最小权限:              ⏭️  未触发 (前面防御已拦截)
-  双重意图验证:                   ⏭️  未触发 (前面防御已拦截)
+  响应清洗（防线 1）:           ✅ 触发 — 清洗了 11 处恶意模式
+  意图验证（防线 2）:           ⊖ 未触发 (攻击在更早阶段被拦截)
+  Server 最小权限（防线 3）:    ⊖ 未触发 (攻击在更早阶段被拦截)
 ```
 
-`--skip-clean` 模式（单独测试 Layer 2 + 3）：
+`--skip-clean` 模式（跳过防线 1，测试防线 2 + 3）：
 ```
 [🧹 Middleware] 响应清洗已被跳过
 [🔧 MCP] CallToolRequest: process_order({"product_id": "P001", "quantity": 1})
 [🔍 Intent Check] User did not authorize process_order → call blocked
 
 📊 防御层触发状态
-  响应清洗 (Middleware):         已禁用
-  Server 端最小权限:              ⏭️  未触发 (前面防御已拦截)
-  双重意图验证:                   ✅ 触发 — 用户请求与 process_order 操作不匹配
+  响应清洗（防线 1）:          已禁用
+  意图验证（防线 2）:           ✅ 触发 — 用户请求与 process_order 操作不匹配
+  Server 最小权限（防线 3）:    ⏭️  未触发 (前面防线已拦截)
 ```
 
-`--skip-clean --skip-intent` 模式（单独测试 Layer 2）：
+`--skip-clean --skip-intent` 模式（跳过防线 1+2，单独测试防线 3）：
 ```
 [🔧 MCP] CallToolRequest: process_order({"product_id": "P001", "quantity": 1})
 [🖥️  Server] Server 端拒绝直接执行: process_order
 
 📊 防御层触发状态
-  响应清洗 (Middleware):         已禁用
-  Server 端最小权限:              ✅ 触发 — Server 返回 pending_confirmation
-  双重意图验证:                   已禁用
+  响应清洗（防线 1）:          已禁用
+  意图验证（防线 2）:          已禁用
+  Server 最小权限（防线 3）:    ✅ 触发 — Server 返回 pending_confirmation
 ```
 
 ### 6.7 思考题
@@ -1127,7 +1127,7 @@ python defense_mcp.py
 1. XML 定界符防御依赖 LLM 对标签语义的理解。实测中 qwen2.5-7b 在增强版中文注入面前 Spotlighting 失效。为什么小模型在具体行动指令（"直接调用工具！"）和抽象安全规则（"忽略标签内指令"）之间倾向于前者？这与 Transformer 的注意力机制有何关联？
 2. MCP 架构中，Server 端和 Client 端都可以做安全防护。在真实生产环境中，这两层防御应该各自负责什么？是否可以完全依赖其中一层？
 3. `defense_mcp.py` 使用真实 MCP 协议（`mcp_client.stdio_client` 连接子进程）。与 `defense_native.py` 的本地函数调用相比，协议化架构在安全防护上有哪些独特的优势和劣势？
-4. 三层防御（Middleware、Server 最小权限、Intent 校验）的排列顺序是否合理？如果将 Intent 校验放在 Middleware 之前会有什么效果？结合你的测试结果分析"纵深防御"中各层的最优顺序。
+4. 三层防御（Middleware → Intent → Server）的排列顺序按实际执行流设计：Middleware 是数据入口第一道防线，Intent 是工具调用时的第二道防线，Server 是最后的结构化硬约束。如果尝试将 Intent 放在 Middleware 之前会发生什么？从"触发条件"的角度分析为什么这种重排不可行。
 
 ---
 
@@ -1156,9 +1156,9 @@ python defense_mcp.py
   │                           │           │       │                       │
   │  LLM ──tool_calls──▶      │           │  LLM ──tool_calls──▶          │
   │       │                   │           │       │                       │
-  │  本地函数执行 ←───────────│           │  ① Intent 校验 (防御 3)        │
+  │  本地函数执行 ←───────────│           │  ① Middleware 清洗 (防线 1)    │
   │       │                   │           │  ② JSON-RPC ──────▶ Server   │
-  │  result → content 拼接     │           │  ③ Middleware (防御 1)        │
+  │  result → content 拼接     │           │  ③ Intent 校验 (防线 2)       │
   │                           │           │  ④ CallToolResult ◀──────────│
   └──────────────────────────┘           └──────────────────────────────┘
        ▲                                          ▲
@@ -1169,12 +1169,12 @@ python defense_mcp.py
        │                                          │  Context Window 劫持
        │                                          │
   防御：Spotlighting 定界符 + HITL 硬拦截    防御：
-                                          ╔══════════════════════════╗
-                                          ║ Layer 1: Middleware 清洗║
-                                          ║ Layer 2: Server 最小权限║
-                                          ║ Layer 3: Intent 意图校验║
-                                          ╚══════════════════════════╝
-                                            支持 --skip-* 旗标逐层测试
+                                           ╔══════════════════════════╗
+                                           ║ 防线 1: Middleware 清洗 ║
+                                           ║ 防线 2: Intent 意图校验 ║
+                                           ║ 防线 3: Server 最小权限 ║
+                                           ╚══════════════════════════╝
+                                             支持 --skip-* 旗标逐层测试
 ```
 
 ### 7.3 开放性思考题
